@@ -46,6 +46,13 @@
 
 * **Adaptive Light & Dark Themes:** Automatically syncs with the Android system theme while also providing an instant in-app Light/Dark mode toggle without losing editor state.
 
+### How the Simulation Engine Works (`Model.kt`)
+
+1. **Digital Solver (`settleDigital`):** Uses a Disjoint-Set (`Nets`) structure to merge connected pins into electrical nets and iteratively evaluates IC gate units (`memo[14]`) until outputs converge—allowing sequential feedback circuits like **SR Latches** to hold state reliably.
+
+2. **Analog Solver (`settleAnalog`):** Builds a conductance matrix $A$ and current source vector $b$ using **Modified Nodal Analysis (MNA)** and solves $Ax = b$ via **Gaussian elimination with partial pivoting (`solve`)**, iteratively resolving non-linear junctions (diodes, LEDs, and BJT base-emitter junctions).
+## For Developers Section
+
 ## 🏗️ Project Architecture
 
 ```
@@ -58,12 +65,6 @@ com.legendAhmed.logiclab
     └── Type.kt              # Typography definitions
 
 ```
-
-### How the Simulation Engine Works (`Model.kt`)
-
-1. **Digital Solver (`settleDigital`):** Uses a Disjoint-Set (`Nets`) structure to merge connected pins into electrical nets and iteratively evaluates IC gate units (`memo[14]`) until outputs converge—allowing sequential feedback circuits like **SR Latches** to hold state reliably.
-
-2. **Analog Solver (`settleAnalog`):** Builds a conductance matrix $A$ and current source vector $b$ using **Modified Nodal Analysis (MNA)** and solves $Ax = b$ via **Gaussian elimination with partial pivoting (`solve`)**, iteratively resolving non-linear junctions (diodes, LEDs, and BJT base-emitter junctions).
 
 ## 🛠️ Tech Stack
 
