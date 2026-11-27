@@ -1,0 +1,189 @@
+#### From MainActivity.kt :
+in function EditorScreen
+//    table?.let { t -> TruthTableDialog(t, pal) { table = null } }
+fun TruthTableDialog(t: TTResult, pal: Pal, onClose: () -> Unit) {
+    val pageSize = 32
+    var page by remember(t) { mutableStateOf(0) }
+    val totalPages = max(1, (t.rows.size + pageSize - 1) / pageSize)
+    val pageRows = remember(t, page) {
+        val from = page * pageSize
+        val to = minOf(from + pageSize, t.rows.size)
+        if (from < to) t.rows.subList(from, to) else emptyList()
+    }
+
+    AlertDialog(
+        onDismissRequest = onClose,
+        containerColor = pal.card,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Truth table", color = pal.ink, modifier = Modifier.weight(1f))
+                if (t.error == null && totalPages > 1) {
+                    Text(
+                        "Page ${page + 1} / $totalPages",
+                        color = pal.sub,
+                        fontSize = 12.sp
+                    )
+                }
+            }
+        },
+        text = {
+            if (t.error != null) {Text(t.error, color = pal.sub)}
+            else {
+                Column {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Brand)
+                            .padding(vertical = 8.dp)
+                    ) {
+                        t.heads.forEach { h ->
+                            Text(h,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                    // Paginated rows (only 32 rendered at a time)
+                    Column(
+                        Modifier
+                            .heightIn(max = 320.dp)
+                            .verticalScroll(rememberScrollState())
+
+                    ) {
+                        pageRows.forEach { r ->
+                            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                                r.forEachIndexed { i, v ->
+                                    Text(
+                                        v,
+                                        color = if (i < t.nIn) pal.ink else Violet,
+                                        fontSize = 14.sp,
+                                        fontWeight = if (i < t.nIn) FontWeight.Normal else FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                // Pagination controls when there is more than 1 page
+                    if (totalPages > 1) {
+                        Spacer(Modifier.height(10.dp))
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Pill("‹ Prev", page > 0, pal) {
+                                if (page > 0) page--
+                            }
+                            Text(
+                                "Rows ${page * pageSize + 1}–${minOf((page + 1) * pageSize, t.rows.size)} of ${t.rows.size}",
+                                color = pal.sub,
+                                fontSize = 11.sp
+                            )
+                            Pill("Next ›", page < totalPages - 1, pal) {
+                                if (page < totalPages - 1) page++
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onClose) { Text("Close", color = Violet) } }
+    )
+}
+in function TruthTableDialog
+/*        Column(Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
+//                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Brand).padding(vertical = 8.dp)) {
+//                    t.heads.forEach { h ->
+//                        Text(h, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
+//                    }
+//                }
+//                t.rows.forEach { r ->
+//                    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+//                        r.forEachIndexed { i, v ->
+//                            Text(
+//                                v, color = if (i < t.nIn) pal.ink else Violet, fontSize = 15.sp,
+//                                fontWeight = if (i < t.nIn) FontWeight.Normal else FontWeight.Bold,
+//                                fontFamily = FontFamily.Monospace, textAlign = TextAlign.Center, modifier = Modifier.weight(1f)
+//                            )
+//                        }
+//                    }
+//                }
+//            }
+        },
+*/
+private fun DrawScope.drawNode(n: Node, c: Circuit, tm: TextMeasurer, pal: Pal, selected: Boolean)
+        // old
+        /*
+        k == Kind.LAMP -> {
+            if (n.lit) drawCircle(LampOn.copy(alpha = 0.3f), w * 0.75f, center)
+            drawCircle(if (n.lit) LampOn else pal.card, w / 2f, center)
+            drawCircle(border, w / 2f, center, style = Stroke(bw))
+            if (n.burnt) drawLabel(tm, "x", center, 22f, Danger)
+            else drawLabel(tm, if (n.lit) "1" else "0", center, 20f, if (n.lit) Color(0xFF1B1C3A) else pal.ink)
+            if (full) {
+                drawLabel(tm, "+", Offset(n.x + 7f, center.y), 9f, pal.sub, -1)
+                drawLabel(tm, "-", Offset(n.x + w - 7f, center.y), 9f, pal.sub, 1)
+            }
+        }
+        */
+#### From Model.kt :
+/*
+fun buildTruthTable(c: Circuit, page: Int = 0, pageSize: Int = 32): TTResult {
+    val ins = c.nodes.filter { it.kind.isSource }
+    val outs = c.nodes.filter { it.kind == Kind.LAMP || it.kind == Kind.HEX }
+    if (ins.isEmpty() || outs.isEmpty())
+        return TTResult("Add at least one input and one output (lamp or display).", emptyList(), 0, emptyList())
+    if (ins.size > 11)
+        return TTResult("Truth tables support up to 11 inputs. This circuit has ${ins.size}.", emptyList(), 0, emptyList())
+
+    val inNames = ins.mapIndexed { i, n -> n.label.ifBlank { ('A' + i).toString() } }
+    val outNames = outs.mapIndexed { i, n -> n.label.ifBlank { "Y${i + 1}" } }
+    val saved = ins.map { it.on }
+    val rows = ArrayList<List<String>>()
+    for (mask in 0 until (1 shl ins.size)) {
+        ins.forEachIndexed { i, n -> n.on = ((mask shr (ins.size - 1 - i)) and 1) == 1 }
+        c.settle()
+        val row = ins.map { if (it.on) "1" else "0" } +
+                outs.map { if (it.kind == Kind.HEX) it.hexVal.toString(16).uppercase() else if (it.lit) "1" else "0" }
+        rows.add(row)
+    }
+    ins.forEachIndexed { i, n -> n.on = saved[i] }
+    c.settle()
+    return TTResult(null, inNames + outNames, ins.size, rows)
+}
+ */
+     fun pin(n: Node, i: Int): Offset = local1(n.kind, i) + Offset(n.x, n.y)
+     fun local1(k: Kind, i: Int): Offset {
+             val w = w(k)
+             val h = h(k)
+             return when {
+                 k.isIC -> if (i < 7) Offset(0f, 18f + i * 16f) else Offset(w, 18f + (13 - i) * 16f)
+                 k.isSource -> Offset(w, h / 2f)
+                 k == Kind.LAMP -> if (i == 0) Offset(0f, h / 2f) else Offset(w, h / 2f)
+                 k == Kind.HEX -> Offset(0f, h * (i + 1) / 5f)
+                 k == Kind.BATTERY -> if (i == 0) Offset(w, h / 2f) else Offset(0f, h / 2f)
+                 k == Kind.GND -> Offset(w / 2f, 0f)
+                 k == Kind.NPN || k == Kind.PNP -> when (i) {
+                     0 -> Offset(0f, h / 2f)
+                     1 -> Offset(w, 10f)
+                     else -> Offset(w, h - 10f)
+                 }
+                 else -> if (i == 0) Offset(0f, h / 2f) else Offset(w, h / 2f)
+             }
+         }
+     fun side(k: Kind, i: Int): Int = when {
+         k.isIC -> if (i < 7) -1 else 1
+         k.isSource -> 1
+         k == Kind.LAMP -> if (i == 0) -1 else 1
+         k == Kind.HEX -> -1
+         k == Kind.BATTERY -> if (i == 0) 1 else -1
+         k == Kind.GND -> 0
+         else -> if (i == 0) -1 else 1
+     }

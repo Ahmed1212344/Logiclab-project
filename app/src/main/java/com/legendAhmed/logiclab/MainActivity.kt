@@ -449,6 +449,7 @@ fun EditorScreen(app: AppState, circuit: Circuit, history: History, store: Store
     val ctx = LocalContext.current
     val d = LocalDensity.current.density
     val tm = rememberTextMeasurer()
+    var tablePage by remember { mutableStateOf(0) }
 
     var tool by remember { mutableStateOf("move") }        // move | pan | erase | label
     var running by remember { mutableStateOf(true) }
@@ -475,7 +476,7 @@ fun EditorScreen(app: AppState, circuit: Circuit, history: History, store: Store
     }
 
     fun nodeAt(w: Offset): Node? = circuit.nodes.lastOrNull {
-        w.x in it.x..(it.x + Dim.w(it.kind)) && w.y in it.y..(it.y + Dim.h(it.kind))
+        w.x in it.x..(it.x + Dim.rw(it)) && w.y in it.y..(it.y + Dim.rh(it))
     }
 
     fun pinAt(w: Offset): Pair<Node, Int>? {
@@ -496,7 +497,7 @@ fun EditorScreen(app: AppState, circuit: Circuit, history: History, store: Store
         val b = circuit.byId(wr.b)
         if (a == null || b == null) false
         else {
-            val c = bez(Dim.pin(a, wr.ap), Dim.side(a.kind, wr.ap), Dim.pin(b, wr.bp), Dim.side(b.kind, wr.bp))
+            val c = bez(Dim.pin(a, wr.ap), Dim.dir(a, wr.ap), Dim.pin(b, wr.bp), Dim.dir(b, wr.bp))
             (0..30).any { i -> (bezAt(c, i / 30f) - w).getDistance() < 10f / zoom }
         }
     }
@@ -510,7 +511,16 @@ fun EditorScreen(app: AppState, circuit: Circuit, history: History, store: Store
             circuit.settle()
         }
     }
-
+    fun rotateSelected() {
+        val n = selected ?: return
+        commit()
+        val oldW = Dim.rw(n)
+        val oldH = Dim.rh(n)
+        n.rot = (n.rot + 1) % 4
+        // Keep the center of the element in the same spot after rotating
+        n.x += (oldW - Dim.rw(n)) / 2f
+        n.y += (oldH - Dim.rh(n)) / 2f
+    }
     fun zoomBy(f: Float) {
         val nz = (zoom * f).coerceIn(0.25f, 4f)
         val center = Offset(viewSize.width / 2f, viewSize.height / 2f)
@@ -599,8 +609,11 @@ fun EditorScreen(app: AppState, circuit: Circuit, history: History, store: Store
             listOf("move" to "Move", "pan" to "Pan", "erase" to "Erase", "label" to "Label").forEach { (k, t) ->
                 Pill(t, tool == k, pal) { tool = k }
             }
+            if (tool == "move" && selected != null) {
+                Pill("Rotate ↻", false, pal) { rotateSelected() }
+            }
             Pill(if (running) "Pause" else "Run", !running, pal) { running = !running }
-            Pill("Table", false, pal) { table = buildTruthTable(circuit) }
+            Pill("Table", false, pal) { tablePage = 0 ; table = buildTruthTable(circuit, page = 0) }
             Pill(if (circuit.mode1 == Mode.FULL) "Full" else "Normal", circuit.mode1 == Mode.FULL, pal) { toggleMode() }
         }
         Text(
@@ -753,10 +766,10 @@ fun EditorScreen(app: AppState, circuit: Circuit, history: History, store: Store
                         val a = circuit.byId(w.a)
                         val b = circuit.byId(w.b)
                         if (a != null && b != null) {
-                            drawWire(Dim.pin(a, w.ap), Dim.side(a.kind, w.ap), Dim.pin(b, w.bp), Dim.side(b.kind, w.bp), w.high, pal)
+                            drawWire(Dim.pin(a, w.ap), Dim.dir(a, w.ap), Dim.pin(b, w.bp), Dim.dir(b, w.bp), w.high, pal)
                         }
                     }
-                    wireFrom?.let { f -> drawWire(Dim.pin(f.first, f.second), Dim.side(f.first.kind, f.second), wireEnd, 0, false, pal, true) }
+                    wireFrom?.let { f -> drawWire(Dim.pin(f.first, f.second), Dim.dir(f.first, f.second), wireEnd, 0 to 0, false, pal, true) }
                     circuit.nodes.forEach { drawNode(it, circuit, tm, pal, it == selected) }
                 }
             }
@@ -819,31 +832,100 @@ fun EditorScreen(app: AppState, circuit: Circuit, history: History, store: Store
             if (t.isNotBlank()) { app.name = t; autosave(); Toast.makeText(ctx, "Saved", Toast.LENGTH_SHORT).show() }
         }
     }
-    table?.let { t -> TruthTableDialog(t, pal) { table = null } }
+    table?.let { t ->
+        TruthTableDialog(
+            t = t,
+            page = tablePage,
+            pal = pal,
+            onPageChange = { newPage ->
+                tablePage = newPage
+                table = buildTruthTable(circuit, page = newPage)
+            },
+            onClose = { table = null }
+        )
+    }
 }
 
 @Composable
-fun TruthTableDialog(t: TTResult, pal: Pal, onClose: () -> Unit) {
+fun TruthTableDialog(t: TTResult, page: Int, pal: Pal, onPageChange: (Int) -> Unit, onClose: () -> Unit) {
+    val pageSize = 32
+    val totalPages = max(1, (t.totalRows + pageSize - 1) / pageSize)
+
     AlertDialog(
         onDismissRequest = onClose,
         containerColor = pal.card,
-        title = { Text("Truth table", color = pal.ink) },
-        text = {
-            if (t.error != null) Text(t.error, color = pal.sub)
-            else Column(Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
-                Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(Brand).padding(vertical = 8.dp)) {
-                    t.heads.forEach { h ->
-                        Text(h, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.weight(1f))
-                    }
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Truth table", color = pal.ink, modifier = Modifier.weight(1f))
+                if (t.error == null && totalPages > 1) {
+                    Text("Page ${page + 1} / $totalPages", color = pal.sub, fontSize = 12.sp)
                 }
-                t.rows.forEach { r ->
-                    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
-                        r.forEachIndexed { i, v ->
+            }
+        },
+        text = {
+            if (t.error != null) {
+                Text(t.error, color = pal.sub)
+            } else {
+                Column {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Brand)
+                            .padding(vertical = 8.dp)
+                    ) {
+                        t.heads.forEach { h ->
                             Text(
-                                v, color = if (i < t.nIn) pal.ink else Violet, fontSize = 15.sp,
-                                fontWeight = if (i < t.nIn) FontWeight.Normal else FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace, textAlign = TextAlign.Center, modifier = Modifier.weight(1f)
+                                h,
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.weight(1f)
                             )
+                        }
+                    }
+
+                    Column(
+                        Modifier
+                            .heightIn(max = 320.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        t.rows.forEach { r ->
+                            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                                r.forEachIndexed { i, v ->
+                                    Text(
+                                        v,
+                                        color = if (i < t.nIn) pal.ink else Violet,
+                                        fontSize = 14.sp,
+                                        fontWeight = if (i < t.nIn) FontWeight.Normal else FontWeight.Bold,
+                                        fontFamily = FontFamily.Monospace,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    if (totalPages > 1) {
+                        Spacer(Modifier.height(10.dp))
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Pill("‹ Prev", page > 0, pal) {
+                                if (page > 0) onPageChange(page - 1)
+                            }
+                            Text(
+                                "Rows ${page * pageSize + 1}–${minOf((page + 1) * pageSize, t.totalRows)} of ${t.totalRows}",
+                                color = pal.sub,
+                                fontSize = 11.sp
+                            )
+                            Pill("Next ›", page < totalPages - 1, pal) {
+                                if (page < totalPages - 1) onPageChange(page + 1)
+                            }
                         }
                     }
                 }
@@ -854,9 +936,14 @@ fun TruthTableDialog(t: TTResult, pal: Pal, onClose: () -> Unit) {
 }
 
 /* ============================ Drawing ============================ */
-private fun bez(a: Offset, da: Int, b: Offset, db: Int): List<Offset> {
-    val dx = max(40f, abs(b.x - a.x) / 2f)
-    return listOf(a, Offset(a.x + da * dx, a.y), Offset(b.x + db * dx, b.y), b)
+private fun bez(a: Offset, da: Pair<Int, Int>, b: Offset, db: Pair<Int, Int>): List<Offset> {
+    val dist = max(40f, max(abs(b.x - a.x), abs(b.y - a.y)) / 2f)
+    return listOf(
+        a,
+        Offset(a.x + da.first * dist, a.y + da.second * dist),
+        Offset(b.x + db.first * dist, b.y + db.second * dist),
+        b
+    )
 }
 
 private fun bezAt(c: List<Offset>, t: Float): Offset {
@@ -864,7 +951,10 @@ private fun bezAt(c: List<Offset>, t: Float): Offset {
     return c[0] * (u * u * u) + c[1] * (3f * u * u * t) + c[2] * (3f * u * t * t) + c[3] * (t * t * t)
 }
 
-private fun DrawScope.drawWire(a: Offset, da: Int, b: Offset, db: Int, on: Boolean, pal: Pal, dashed: Boolean = false) {
+private fun DrawScope.drawWire(
+    a: Offset, da: Pair<Int, Int>, b: Offset, db: Pair<Int, Int>,
+    on: Boolean, pal: Pal, dashed: Boolean = false
+) {
     val c = bez(a, da, b, db)
     val path = Path().apply {
         moveTo(c[0].x, c[0].y)
@@ -902,162 +992,154 @@ private fun DrawScope.drawNode(n: Node, c: Circuit, tm: TextMeasurer, pal: Pal, 
     val k = n.kind
     val w = Dim.w(k)
     val h = Dim.h(k)
-    val tl = Offset(n.x, n.y)
-    val center = Offset(n.x + w / 2f, n.y + h / 2f)
+    val rw = Dim.rw(n)
+    val rh = Dim.rh(n)
+    // Shift local drawing origin so rotating around the center aligns with (n.x, n.y, rw, rh)
+    val ox = n.x + (rw - w) / 2f
+    val oy = n.y + (rh - h) / 2f
+    val tl = Offset(ox, oy)
+    val center = Offset(ox + w / 2f, oy + h / 2f)
     val border = if (selected) Violet else pal.ink.copy(alpha = 0.7f)
     val bw = if (selected) 3f else 1.6f
     val corner = CornerRadius(12f)
     val full = c.mode1 == Mode.FULL
 
-    when {
-        k.isIC -> {
-            drawRoundRect(pal.card, tl, Size(w, h), CornerRadius(8f))
-            drawRoundRect(border, tl, Size(w, h), CornerRadius(8f), style = Stroke(bw))
-            drawArc(pal.bg, 0f, 180f, true, Offset(n.x + w / 2f - 6f, n.y - 6f), Size(12f, 12f))
-            drawArc(border, 0f, 180f, false, Offset(n.x + w / 2f - 6f, n.y - 6f), Size(12f, 12f), style = Stroke(1.4f))
-            drawLabel(tm, k.label, Offset(center.x, center.y - 8f), 14f, pal.ink)
-            drawLabel(tm, k.chip, Offset(center.x, center.y + 8f), 9f, pal.sub, bold = false)
-            for (i in 0 until 14) {
-                val p = Dim.local(k, i)
-                val power = i == 6 || i == 13
-                val text = when {
-                    i == 6 -> "GND"
-                    i == 13 -> "VCC"
-                    else -> when (n.roles[i]) {
-                        Role.IN -> "In"
-                        Role.OUT -> "Out"
-                        Role.NC -> "-"
+    withTransform({ rotate(n.rot * 90f, pivot = center) }) {
+        // Place your existing `when { ... }` body drawing block here,
+        // replacing `n.x` with `ox` and `n.y` with `oy` inside the `when` block!
+        when {
+            k.isIC -> {
+                drawRoundRect(pal.card, tl, Size(w, h), CornerRadius(8f))
+                drawRoundRect(border, tl, Size(w, h), CornerRadius(8f), style = Stroke(bw))
+                drawArc(pal.bg, 0f, 180f, true, Offset(ox + w / 2f - 6f, oy - 6f), Size(12f, 12f))
+                drawArc(border, 0f, 180f, false, Offset(ox + w / 2f - 6f, oy - 6f), Size(12f, 12f), style = Stroke(1.4f))
+                drawLabel(tm, k.label, Offset(center.x, center.y - 8f), 14f, pal.ink)
+                drawLabel(tm, k.chip, Offset(center.x, center.y + 8f), 9f, pal.sub, bold = false)
+                for (i in 0 until 14) {
+                    val p = Dim.local(k, i)
+                    val power = i == 6 || i == 13
+                    val text = when {
+                        i == 6 -> "GND"
+                        i == 13 -> "VCC"
+                        else -> when (n.roles[i]) {
+                            Role.IN -> "In"
+                            Role.OUT -> "Out"
+                            Role.NC -> "-"
+                        }
                     }
+                    val col = when {
+                        power && !full -> pal.low.copy(alpha = 0.5f)
+                        !power && n.roles[i] == Role.OUT -> Violet
+                        else -> pal.sub
+                    }
+                    if (i < 7) drawLabel(tm, "${i + 1} $text", Offset(n.x + 6f, n.y + p.y), 8f, col, -1)
+                    else drawLabel(tm, "$text ${i + 1}", Offset(n.x + w - 6f, n.y + p.y), 8f, col, 1)
                 }
-                val col = when {
-                    power && !full -> pal.low.copy(alpha = 0.5f)
-                    !power && n.roles[i] == Role.OUT -> Violet
-                    else -> pal.sub
+            }
+            k == Kind.LAMP -> {
+                if (n.lit) drawCircle(LampOn.copy(alpha = 0.3f), w * 0.75f, center)
+                drawCircle(if (n.lit) LampOn else pal.card, w / 2f, center)
+                drawCircle(if (n.burnt) Danger else border, w / 2f, center, style = Stroke(if (n.burnt) 2.6f else bw))
+
+                // Always show "1" when lit (even when over-volted)
+                drawLabel(tm, if (n.lit) "1" else "0", center, 20f, if (n.lit) Color(0xFF1B1C3A) else pal.ink)
+
+                // Draw warning badge on top-right if voltage/current exceeds standard lamp rating
+                if (n.burnt) {
+                    val wx = n.x + w - 4f
+                    val wy = n.y + 4f
+                    val tri = Path().apply {
+                        moveTo(wx, wy - 9f)
+                        lineTo(wx - 8f, wy + 6f)
+                        lineTo(wx + 8f, wy + 6f)
+                        close()
+                    }
+                    drawPath(tri, Danger)
+                    drawPath(tri, Color.White, style = Stroke(1.2f))
+                    drawLabel(tm, "!", Offset(wx, wy + 0.5f), 9f, Color.White)
                 }
-                if (i < 7) drawLabel(tm, "${i + 1} $text", Offset(n.x + 6f, n.y + p.y), 8f, col, -1)
-                else drawLabel(tm, "$text ${i + 1}", Offset(n.x + w - 6f, n.y + p.y), 8f, col, 1)
-            }
-        }
-        // old
-        /*
-        k == Kind.LAMP -> {
-            if (n.lit) drawCircle(LampOn.copy(alpha = 0.3f), w * 0.75f, center)
-            drawCircle(if (n.lit) LampOn else pal.card, w / 2f, center)
-            drawCircle(border, w / 2f, center, style = Stroke(bw))
-            if (n.burnt) drawLabel(tm, "x", center, 22f, Danger)
-            else drawLabel(tm, if (n.lit) "1" else "0", center, 20f, if (n.lit) Color(0xFF1B1C3A) else pal.ink)
-            if (full) {
-                drawLabel(tm, "+", Offset(n.x + 7f, center.y), 9f, pal.sub, -1)
-                drawLabel(tm, "-", Offset(n.x + w - 7f, center.y), 9f, pal.sub, 1)
-            }
-        }
-        */
-        //new
-        /**/
-          k == Kind.LAMP -> {
-            if (n.lit) drawCircle(LampOn.copy(alpha = 0.3f), w * 0.75f, center)
-            drawCircle(if (n.lit) LampOn else pal.card, w / 2f, center)
-            drawCircle(if (n.burnt) Danger else border, w / 2f, center, style = Stroke(if (n.burnt) 2.6f else bw))
 
-            // Always show "1" when lit (even when over-volted)
-            drawLabel(tm, if (n.lit) "1" else "0", center, 20f, if (n.lit) Color(0xFF1B1C3A) else pal.ink)
-
-            // Draw warning badge on top-right if voltage/current exceeds standard lamp rating
-            if (n.burnt) {
-                val wx = n.x + w - 4f
-                val wy = n.y + 4f
+                if (full) {
+                    drawLabel(tm, "+", Offset(n.x + 7f, center.y), 9f, pal.sub, -1)
+                    drawLabel(tm, "-", Offset(n.x + w - 7f, center.y), 9f, pal.sub, 1)
+                }
+            }
+            k == Kind.HEX -> {
+                drawRoundRect(pal.card, tl, Size(w, h), corner)
+                drawRoundRect(border, tl, Size(w, h), corner, style = Stroke(bw))
+                val mask = SEGMENTS[n.hexVal and 15]
+                val l = n.x + 16f
+                val t = n.y + 10f
+                val sw = 36f
+                val sh = 64f
+                val th = 6f
+                fun seg(bit: Int, x: Float, y: Float, ww: Float, hh: Float) =
+                    drawRoundRect(if (mask and bit != 0) SegOn else pal.grid, Offset(x, y), Size(ww, hh), CornerRadius(3f))
+                seg(1, l + 4f, t, sw - 8f, th)
+                seg(2, l + sw - th, t + 4f, th, sh / 2f - 6f)
+                seg(4, l + sw - th, t + sh / 2f + 2f, th, sh / 2f - 6f)
+                seg(8, l + 4f, t + sh - th, sw - 8f, th)
+                seg(16, l, t + sh / 2f + 2f, th, sh / 2f - 6f)
+                seg(32, l, t + 4f, th, sh / 2f - 6f)
+                seg(64, l + 4f, t + sh / 2f - th / 2f, sw - 8f, th)
+            }
+            k.isSource -> {
+                if (n.on) drawRoundRect(Brand, tl, Size(w, h), corner) else drawRoundRect(pal.card, tl, Size(w, h), corner)
+                drawRoundRect(border, tl, Size(w, h), corner, style = Stroke(bw))
+                val fg = if (n.on) Color.White else pal.ink
+                drawLabel(tm, if (n.on) "1" else "0", Offset(center.x, center.y - 5f), 22f, fg)
+                val tag = when (k) {
+                    Kind.SWITCH -> "SW"
+                    Kind.BUTTON -> "BTN"
+                    else -> "CLK"
+                }
+                drawLabel(tm, tag, Offset(center.x, n.y + h - 9f), 9f, fg.copy(alpha = 0.75f))
+            }
+            k == Kind.BATTERY -> {
+                drawRoundRect(pal.card, tl, Size(w, h), corner)
+                drawRoundRect(border, tl, Size(w, h), corner, style = Stroke(bw))
+                drawLabel(tm, formatValue(n.value) + "V", center, 14f, pal.ink)
+                drawLabel(tm, "+", Offset(n.x + w - 7f, n.y + 10f), 10f, pal.sub, 1)
+                drawLabel(tm, "-", Offset(n.x + 7f, n.y + 10f), 10f, pal.sub, -1)
+            }
+            k == Kind.GND -> {
+                val cx = n.x + w / 2f
+                val ink = pal.ink
+                drawLine(ink, Offset(cx, n.y), Offset(cx, n.y + 14f), 2.4f)
+                drawLine(ink, Offset(cx - 14f, n.y + 14f), Offset(cx + 14f, n.y + 14f), 2.4f)
+                drawLine(ink, Offset(cx - 9f, n.y + 22f), Offset(cx + 9f, n.y + 22f), 2.4f)
+                drawLine(ink, Offset(cx - 4f, n.y + 30f), Offset(cx + 4f, n.y + 30f), 2.4f)
+            }
+            k == Kind.RESISTOR -> {
+                drawRoundRect(pal.card, tl, Size(w, h), CornerRadius(6f))
+                drawRoundRect(border, tl, Size(w, h), CornerRadius(6f), style = Stroke(bw))
+                drawLabel(tm, formatValue(n.value) + "Ω", center, 12f, pal.ink)
+            }
+            k == Kind.DIODE -> {
+                val cy = center.y
+                val ink = pal.ink
+                drawLine(ink, Offset(n.x, cy), Offset(n.x + 22f, cy), 2.4f)
                 val tri = Path().apply {
-                    moveTo(wx, wy - 9f)
-                    lineTo(wx - 8f, wy + 6f)
-                    lineTo(wx + 8f, wy + 6f)
-                    close()
+                    moveTo(n.x + 22f, cy - 11f); lineTo(n.x + 22f, cy + 11f); lineTo(n.x + 48f, cy); close()
                 }
-                drawPath(tri, Danger)
-                drawPath(tri, Color.White, style = Stroke(1.2f))
-                drawLabel(tm, "!", Offset(wx, wy + 0.5f), 9f, Color.White)
+                drawPath(tri, if (n.j1) Violet else pal.card)
+                drawPath(tri, border, style = Stroke(bw))
+                drawLine(ink, Offset(n.x + 48f, cy - 11f), Offset(n.x + 48f, cy + 11f), 2.4f)
+                drawLine(ink, Offset(n.x + 48f, cy), Offset(n.x + w, cy), 2.4f)
             }
-
-            if (full) {
-                drawLabel(tm, "+", Offset(n.x + 7f, center.y), 9f, pal.sub, -1)
-                drawLabel(tm, "-", Offset(n.x + w - 7f, center.y), 9f, pal.sub, 1)
+            k == Kind.SPST -> {
+                if (n.on) drawRoundRect(Brand, tl, Size(w, h), CornerRadius(10f)) else drawRoundRect(pal.card, tl, Size(w, h), CornerRadius(10f))
+                drawRoundRect(border, tl, Size(w, h), CornerRadius(10f), style = Stroke(bw))
+                drawLabel(tm, if (n.on) "ON" else "OFF", center, 13f, if (n.on) Color.White else pal.ink)
             }
-        }
-        /**/
-        k == Kind.HEX -> {
-            drawRoundRect(pal.card, tl, Size(w, h), corner)
-            drawRoundRect(border, tl, Size(w, h), corner, style = Stroke(bw))
-            val mask = SEGMENTS[n.hexVal and 15]
-            val l = n.x + 16f
-            val t = n.y + 10f
-            val sw = 36f
-            val sh = 64f
-            val th = 6f
-            fun seg(bit: Int, x: Float, y: Float, ww: Float, hh: Float) =
-                drawRoundRect(if (mask and bit != 0) SegOn else pal.grid, Offset(x, y), Size(ww, hh), CornerRadius(3f))
-            seg(1, l + 4f, t, sw - 8f, th)
-            seg(2, l + sw - th, t + 4f, th, sh / 2f - 6f)
-            seg(4, l + sw - th, t + sh / 2f + 2f, th, sh / 2f - 6f)
-            seg(8, l + 4f, t + sh - th, sw - 8f, th)
-            seg(16, l, t + sh / 2f + 2f, th, sh / 2f - 6f)
-            seg(32, l, t + 4f, th, sh / 2f - 6f)
-            seg(64, l + 4f, t + sh / 2f - th / 2f, sw - 8f, th)
-        }
-        k.isSource -> {
-            if (n.on) drawRoundRect(Brand, tl, Size(w, h), corner) else drawRoundRect(pal.card, tl, Size(w, h), corner)
-            drawRoundRect(border, tl, Size(w, h), corner, style = Stroke(bw))
-            val fg = if (n.on) Color.White else pal.ink
-            drawLabel(tm, if (n.on) "1" else "0", Offset(center.x, center.y - 5f), 22f, fg)
-            val tag = when (k) {
-                Kind.SWITCH -> "SW"
-                Kind.BUTTON -> "BTN"
-                else -> "CLK"
+            else -> { // NPN / PNP
+                drawRoundRect(pal.card, tl, Size(w, h), corner)
+                drawRoundRect(border, tl, Size(w, h), corner, style = Stroke(bw))
+                drawLabel(tm, k.label, center, 13f, pal.ink)
+                drawLabel(tm, "B", Offset(n.x + 7f, n.y + h / 2f), 9f, pal.sub, -1)
+                drawLabel(tm, "C", Offset(n.x + w - 7f, n.y + 10f), 9f, pal.sub, 1)
+                drawLabel(tm, "E", Offset(n.x + w - 7f, n.y + h - 10f), 9f, pal.sub, 1)
             }
-            drawLabel(tm, tag, Offset(center.x, n.y + h - 9f), 9f, fg.copy(alpha = 0.75f))
-        }
-        k == Kind.BATTERY -> {
-            drawRoundRect(pal.card, tl, Size(w, h), corner)
-            drawRoundRect(border, tl, Size(w, h), corner, style = Stroke(bw))
-            drawLabel(tm, formatValue(n.value) + "V", center, 14f, pal.ink)
-            drawLabel(tm, "+", Offset(n.x + w - 7f, n.y + 10f), 10f, pal.sub, 1)
-            drawLabel(tm, "-", Offset(n.x + 7f, n.y + 10f), 10f, pal.sub, -1)
-        }
-        k == Kind.GND -> {
-            val cx = n.x + w / 2f
-            val ink = pal.ink
-            drawLine(ink, Offset(cx, n.y), Offset(cx, n.y + 14f), 2.4f)
-            drawLine(ink, Offset(cx - 14f, n.y + 14f), Offset(cx + 14f, n.y + 14f), 2.4f)
-            drawLine(ink, Offset(cx - 9f, n.y + 22f), Offset(cx + 9f, n.y + 22f), 2.4f)
-            drawLine(ink, Offset(cx - 4f, n.y + 30f), Offset(cx + 4f, n.y + 30f), 2.4f)
-        }
-        k == Kind.RESISTOR -> {
-            drawRoundRect(pal.card, tl, Size(w, h), CornerRadius(6f))
-            drawRoundRect(border, tl, Size(w, h), CornerRadius(6f), style = Stroke(bw))
-            drawLabel(tm, formatValue(n.value) + "Ω", center, 12f, pal.ink)
-        }
-        k == Kind.DIODE -> {
-            val cy = center.y
-            val ink = pal.ink
-            drawLine(ink, Offset(n.x, cy), Offset(n.x + 22f, cy), 2.4f)
-            val tri = Path().apply {
-                moveTo(n.x + 22f, cy - 11f); lineTo(n.x + 22f, cy + 11f); lineTo(n.x + 48f, cy); close()
-            }
-            drawPath(tri, if (n.j1) Violet else pal.card)
-            drawPath(tri, border, style = Stroke(bw))
-            drawLine(ink, Offset(n.x + 48f, cy - 11f), Offset(n.x + 48f, cy + 11f), 2.4f)
-            drawLine(ink, Offset(n.x + 48f, cy), Offset(n.x + w, cy), 2.4f)
-        }
-        k == Kind.SPST -> {
-            if (n.on) drawRoundRect(Brand, tl, Size(w, h), CornerRadius(10f)) else drawRoundRect(pal.card, tl, Size(w, h), CornerRadius(10f))
-            drawRoundRect(border, tl, Size(w, h), CornerRadius(10f), style = Stroke(bw))
-            drawLabel(tm, if (n.on) "ON" else "OFF", center, 13f, if (n.on) Color.White else pal.ink)
-        }
-        else -> { // NPN / PNP
-            drawRoundRect(pal.card, tl, Size(w, h), corner)
-            drawRoundRect(border, tl, Size(w, h), corner, style = Stroke(bw))
-            drawLabel(tm, k.label, center, 13f, pal.ink)
-            drawLabel(tm, "B", Offset(n.x + 7f, n.y + h / 2f), 9f, pal.sub, -1)
-            drawLabel(tm, "C", Offset(n.x + w - 7f, n.y + 10f), 9f, pal.sub, 1)
-            drawLabel(tm, "E", Offset(n.x + w - 7f, n.y + h - 10f), 9f, pal.sub, 1)
         }
     }
 
@@ -1080,5 +1162,7 @@ private fun DrawScope.drawNode(n: Node, c: Circuit, tm: TextMeasurer, pal: Pal, 
         if (k.isIC && !power && role == Role.OUT) drawCircle(Violet, 6.8f, p, style = Stroke(1.6f))
     }
 
-    if (n.label.isNotBlank()) drawLabel(tm, n.label, Offset(center.x, n.y - 9f), 11f, pal.sub)
+    if (n.label.isNotBlank()) {
+        drawLabel(tm, n.label, Offset(n.x + rw / 2f, n.y - 9f), 11f, pal.sub)
+    }
 }

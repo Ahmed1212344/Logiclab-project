@@ -114,6 +114,7 @@ fun gateFn(k: Kind, ins: List<Boolean>): Boolean {
 class Node(val id: Int, val kind: Kind, x: Float, y: Float, label: String = "") {
     var x by mutableStateOf(x)
     var y by mutableStateOf(y)
+    var rot by mutableStateOf(0)                           // 0=0°, 1=90°, 2=180°, 3=270°
     var label by mutableStateOf(label)
     var on by mutableStateOf(false)                       // Switch / Button / Clock / 2-pin switch
     var value by mutableStateOf(defaultValue(kind))       // ohms (resistor) or volts (battery)
@@ -165,16 +166,30 @@ object Dim {
         k == Kind.NPN || k == Kind.PNP -> 3
         else -> 1
     }
+    fun rw(n: Node): Float = if (n.rot % 2 == 1) h(n.kind) else w(n.kind)
+    fun rh(n: Node): Float = if (n.rot % 2 == 1) w(n.kind) else h(n.kind)
 
+    /** Base side before rotation: (-1, 0) left, (1, 0) right, (0, -1) top */
     /** -1 pin on the left, +1 on the right, 0 on top (GND). Used for the wire curve direction. */
-    fun side(k: Kind, i: Int): Int = when {
-        k.isIC -> if (i < 7) -1 else 1
-        k.isSource -> 1
-        k == Kind.LAMP -> if (i == 0) -1 else 1
-        k == Kind.HEX -> -1
-        k == Kind.BATTERY -> if (i == 0) 1 else -1
-        k == Kind.GND -> 0
-        else -> if (i == 0) -1 else 1
+    private fun baseDir(k: Kind, i: Int): Pair<Int, Int> = when {
+        k.isIC -> if (i < 7) (-1 to 0) else (1 to 0)
+        k.isSource -> (1 to 0)
+        k == Kind.LAMP -> if (i == 0) (-1 to 0) else (1 to 0)
+        k == Kind.HEX -> (-1 to 0)
+        k == Kind.BATTERY -> if (i == 0) (1 to 0) else (-1 to 0)
+        k == Kind.GND -> (0 to -1)
+        else -> if (i == 0) (-1 to 0) else (1 to 0)
+    }
+
+    /** Returns rotated wire tangent direction (dx, dy) in {-1, 0, 1}. */
+    fun dir(n: Node, i: Int): Pair<Int, Int> {
+        val (dx, dy) = baseDir(n.kind, i)
+        return when (n.rot % 4) {
+            1 -> (-dy to dx)
+            2 -> (-dx to -dy)
+            3 -> (dy to -dx)
+            else -> (dx to dy)
+        }
     }
 
     /** DIP-14 layout: pins 1..7 down the left side, pins 8..14 up the right side. */
@@ -197,7 +212,20 @@ object Dim {
         }
     }
 
-    fun pin(n: Node, i: Int): Offset = local(n.kind, i) + Offset(n.x, n.y)
+    /** World pin position accounting for 90° clockwise rotation around the node's bounding box. */
+
+    fun pin(n: Node, i: Int): Offset {
+        val w = w(n.kind)
+        val h = h(n.kind)
+        val p = local(n.kind, i)
+        val rp = when (n.rot % 4) {
+            1 -> Offset(h - p.y, p.x)
+            2 -> Offset(w - p.x, h - p.y)
+            3 -> Offset(p.y, w - p.x)
+            else -> p
+        }
+        return rp + Offset(n.x, n.y)
+    }
 
     fun pinName(k: Kind, i: Int): String = when {
         k.isIC -> (i + 1).toString()
@@ -510,7 +538,7 @@ class Circuit {
         nodes.forEach { n ->
             val roles = if (n.kind.isIC) n.roles.joinToString("") { r -> r.ch.toString() } else "-"
             val lab = n.label.replace("|", " ").replace("\n", " ")
-            appendLine("N|${n.id}|${n.kind.name}|${n.x}|${n.y}|${if (n.on) 1 else 0}|${n.value}|$roles|$lab")
+            appendLine("N|${n.id}|${n.kind.name}|${n.x}|${n.y}|${if (n.on) 1 else 0}|${n.value}|$roles|${n.rot}|$lab")
         }
         wires.forEach { appendLine("W|${it.a}|${it.ap}|${it.b}|${it.bp}") }
     }
@@ -530,9 +558,12 @@ class Circuit {
                         val k = runCatching { Kind.valueOf(p[2]) }.getOrNull()
                         val id = p[1].toIntOrNull()
                         if (k != null && id != null) {
-                            val n = Node(id, k, p[3].toFloatOrNull() ?: 0f, p[4].toFloatOrNull() ?: 0f, p.drop(8).joinToString(" "))
+                            val hasRot = p.size >= 9 && p[8].toIntOrNull() != null
+                            val lab = if (hasRot) p.drop(9).joinToString(" ") else p.drop(8).joinToString(" ")
+                            val n = Node(id, k, p[3].toFloatOrNull() ?: 0f, p[4].toFloatOrNull() ?: 0f, lab)
                             n.on = p[5] == "1"
                             n.value = p[6].toFloatOrNull() ?: defaultValue(k)
+                            if (hasRot) n.rot = (p[8].toIntOrNull() ?: 0) and 3
                             if (k.isIC && p[7].length == 14) {
                                 p[7].forEachIndexed { i, ch ->
                                     n.roles[i] = when (ch) {
@@ -787,28 +818,36 @@ fun buildDemo(c: Circuit, key: String) {
 /* ============================================================
  *  Truth table
  * ============================================================ */
-class TTResult(val error: String?, val heads: List<String>, val nIn: Int, val rows: List<List<String>>)
-
-fun buildTruthTable(c: Circuit): TTResult {
+class TTResult(val error: String?, val heads: List<String>, val nIn: Int, val rows: List<List<String>>, val totalRows: Int = 0)
+fun buildTruthTable(c: Circuit, page: Int = 0, pageSize: Int = 32): TTResult {
     val ins = c.nodes.filter { it.kind.isSource }
     val outs = c.nodes.filter { it.kind == Kind.LAMP || it.kind == Kind.HEX }
     if (ins.isEmpty() || outs.isEmpty())
         return TTResult("Add at least one input and one output (lamp or display).", emptyList(), 0, emptyList())
-    if (ins.size > 6)
-        return TTResult("Truth tables support up to 6 inputs. This circuit has ${ins.size}.", emptyList(), 0, emptyList())
+    if (ins.size > 11)
+        return TTResult("Truth tables support up to 11 inputs. This circuit has ${ins.size}.", emptyList(), 0, emptyList())
+
+    val totalRows = 1 shl ins.size
+    val startMask = (page * pageSize).coerceIn(0, totalRows)
+    val endMask = (startMask + pageSize).coerceIn(startMask, totalRows)
 
     val inNames = ins.mapIndexed { i, n -> n.label.ifBlank { ('A' + i).toString() } }
     val outNames = outs.mapIndexed { i, n -> n.label.ifBlank { "Y${i + 1}" } }
     val saved = ins.map { it.on }
-    val rows = ArrayList<List<String>>()
-    for (mask in 0 until (1 shl ins.size)) {
+    val rows = ArrayList<List<String>>(endMask - startMask)
+
+    for (mask in startMask until endMask) {
         ins.forEachIndexed { i, n -> n.on = ((mask shr (ins.size - 1 - i)) and 1) == 1 }
         c.settle()
         val row = ins.map { if (it.on) "1" else "0" } +
-                outs.map { if (it.kind == Kind.HEX) it.hexVal.toString(16).uppercase() else if (it.lit) "1" else "0" }
+                outs.map {
+                    if (it.kind == Kind.HEX) it.hexVal.toString(16).uppercase()
+                    else if (it.lit) "1" else "0"
+                }
         rows.add(row)
     }
+
     ins.forEachIndexed { i, n -> n.on = saved[i] }
     c.settle()
-    return TTResult(null, inNames + outNames, ins.size, rows)
+    return TTResult(null, inNames + outNames, ins.size, rows, totalRows)
 }
