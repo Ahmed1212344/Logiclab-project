@@ -21,6 +21,14 @@ android {
 
     buildTypes {
         release {
+            isDebuggable = false
+            optimization {
+                enable = true
+                packageScope = setOf("androidx.**", "kotlin.**", "kotlinx.**")
+            }
+        }
+        debug {
+            isDebuggable = true
             optimization {
                 enable = true
                 packageScope = setOf("androidx.**", "kotlin.**", "kotlinx.**")
