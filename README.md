@@ -2,6 +2,8 @@
 
 **Logic Lab** is a native, offline-first Android application built with **Kotlin** and **Jetpack Compose** that allows students and electronics enthusiasts to design, simulate, and test digital logic circuits and basic analog electronics directly on their mobile devices.
 
+**Note** The app is still in development So you May receive bugs or errors
+
 ## 📱 Features
 
 ### 1. Dual Simulation Modes
