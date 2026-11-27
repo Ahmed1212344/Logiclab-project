@@ -613,7 +613,7 @@ fun EditorScreen(app: AppState, circuit: Circuit, history: History, store: Store
                 Pill("Rotate ↻", false, pal) { rotateSelected() }
             }
             Pill(if (running) "Pause" else "Run", !running, pal) { running = !running }
-            Pill("Table", false, pal) { tablePage = 0 ; table = buildTruthTable(circuit) }
+            Pill("Table", false, pal) { tablePage = 0 ; table = buildTruthTable(circuit, page = 0) }
             Pill(if (circuit.mode1 == Mode.FULL) "Full" else "Normal", circuit.mode1 == Mode.FULL, pal) { toggleMode() }
         }
         Text(
@@ -839,7 +839,7 @@ fun EditorScreen(app: AppState, circuit: Circuit, history: History, store: Store
             pal = pal,
             onPageChange = { newPage ->
                 tablePage = newPage
-                table = buildTruthTable(circuit, page = newPage)
+                table = buildTruthTable(circuit, page = newPage, pageSize = 64)
             },
             onClose = { table = null }
         )
