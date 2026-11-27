@@ -819,7 +819,7 @@ fun buildDemo(c: Circuit, key: String) {
  *  Truth table
  * ============================================================ */
 class TTResult(val error: String?, val heads: List<String>, val nIn: Int, val rows: List<List<String>>, val totalRows: Int = 0)
-fun buildTruthTable(c: Circuit, page: Int = 0, pageSize: Int = 32): TTResult {
+fun buildTruthTable(c: Circuit, page: Int = 0, pageSize: Int = 64): TTResult {
     val ins = c.nodes.filter { it.kind.isSource }
     val outs = c.nodes.filter { it.kind == Kind.LAMP || it.kind == Kind.HEX }
     if (ins.isEmpty() || outs.isEmpty())

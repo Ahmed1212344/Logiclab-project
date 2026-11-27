@@ -613,7 +613,7 @@ fun EditorScreen(app: AppState, circuit: Circuit, history: History, store: Store
                 Pill("Rotate ↻", false, pal) { rotateSelected() }
             }
             Pill(if (running) "Pause" else "Run", !running, pal) { running = !running }
-            Pill("Table", false, pal) { tablePage = 0 ; table = buildTruthTable(circuit, page = 0) }
+            Pill("Table", false, pal) { tablePage = 0 ; table = buildTruthTable(circuit) }
             Pill(if (circuit.mode1 == Mode.FULL) "Full" else "Normal", circuit.mode1 == Mode.FULL, pal) { toggleMode() }
         }
         Text(
@@ -848,7 +848,7 @@ fun EditorScreen(app: AppState, circuit: Circuit, history: History, store: Store
 
 @Composable
 fun TruthTableDialog(t: TTResult, page: Int, pal: Pal, onPageChange: (Int) -> Unit, onClose: () -> Unit) {
-    val pageSize = 32
+    val pageSize = 64
     val totalPages = max(1, (t.totalRows + pageSize - 1) / pageSize)
 
     AlertDialog(
@@ -886,12 +886,8 @@ fun TruthTableDialog(t: TTResult, page: Int, pal: Pal, onPageChange: (Int) -> Un
                         }
                     }
 
-                    Column(
-                        Modifier
-                            .heightIn(max = 320.dp)
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        t.rows.forEach { r ->
+                    LazyColumn(Modifier.heightIn(max = 320.dp)) {
+                        items(t.rows) { r ->
                             Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
                                 r.forEachIndexed { i, v ->
                                     Text(
