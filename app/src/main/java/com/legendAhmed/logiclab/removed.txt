@@ -187,3 +187,21 @@ fun buildTruthTable(c: Circuit, page: Int = 0, pageSize: Int = 32): TTResult {
          k == Kind.GND -> 0
          else -> if (i == 0) -1 else 1
      }
+     class Store(ctx: Context) {
+         private val sp = ctx.getSharedPreferences("logic_lab_v3", Context.MODE_PRIVATE)
+         fun names(): List<String> = (sp.getString("names", "") ?: "").split("\n").filter { it.isNotBlank() }
+         fun read(name: String): String = sp.getString("p_$name", "") ?: ""
+         fun save(name: String, data: String) {
+             val list = names().toMutableList()
+             if (name !in list) list.add(0, name)
+             sp.edit().putString("names", list.joinToString("\n")).putString("p_$name", data).apply()
+         }
+
+         fun delete(name: String) {
+             val list = names().filter { it != name }
+             sp.edit().putString("names", list.joinToString("\n")).remove("p_$name").apply()
+         }
+
+         fun darkPref(): Int = sp.getInt("dark", -1)
+         fun setDark(v: Boolean) { sp.edit().putInt("dark", if (v) 1 else 0).apply() }
+     }
